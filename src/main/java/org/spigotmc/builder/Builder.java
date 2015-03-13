@@ -16,6 +16,7 @@ import difflib.Patch;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileNotFoundException;
@@ -52,10 +53,19 @@ import joptsimple.OptionSpec;
 import lombok.RequiredArgsConstructor;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.output.TeeOutputStream;
+import org.eclipse.jgit.api.AddCommand;
+import org.eclipse.jgit.api.FetchCommand;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.lib.CoreConfig;
+import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.transport.RefSpec;
+import org.eclipse.jgit.transport.RemoteConfig;
+import org.eclipse.jgit.transport.TagOpt;
+import org.eclipse.jgit.transport.URIish;
 
 public class Builder
 {
@@ -68,6 +78,7 @@ public class Builder
     private static boolean generateSource;
     private static boolean generateDocs;
     private static boolean dev;
+    private static boolean bash;
 
     public static void main(String[] args) throws Exception
     {
@@ -97,6 +108,7 @@ public class Builder
         OptionSpec<Void> generateDocsFlag = parser.accepts( "generate-docs" );
         OptionSpec<Void> devFlag = parser.accepts( "dev" );
         OptionSpec<String> jenkinsVersion = parser.accepts( "rev" ).withRequiredArg().defaultsTo( "latest" );
+        OptionSpec<Void> bashFlag = parser.accepts( "bash" );
 
         OptionSet options = parser.parse( args );
 
@@ -109,6 +121,7 @@ public class Builder
         generateSource = options.has( generateSourceFlag );
         generateDocs = options.has( generateDocsFlag );
         dev = options.has( devFlag );
+        bash = options.has( bashFlag );
 
         logOutput();
 
@@ -118,31 +131,6 @@ public class Builder
             System.err.println( "*** WARNING *** Use java -version to check your version and update as soon as possible." );
         }
 
-        try
-        {
-            runProcess( CWD, "bash", "-c", "exit" );
-        } catch ( Exception ex )
-        {
-            System.out.println( "You must run this jar through bash (msysgit)" );
-            System.exit( 1 );
-        }
-
-        try
-        {
-            runProcess( CWD, "git", "config", "--global", "user.name" );
-        } catch ( Exception ex )
-        {
-            System.out.println( "Git name not set, setting it to default value." );
-            runProcess( CWD, "git", "config", "--global", "user.name", "BuildTools" );
-        }
-        try
-        {
-            runProcess( CWD, "git", "config", "--global", "user.email" );
-        } catch ( Exception ex )
-        {
-            System.out.println( "Git email not set, setting it to default value." );
-            runProcess( CWD, "git", "config", "--global", "user.email", "unconfigured@null.spigotmc.org" );
-        }
 
         File workDir = new File( "work" );
         workDir.mkdir();
@@ -170,20 +158,6 @@ public class Builder
         {
             clone( "https://hub.spigotmc.org/stash/scm/spigot/builddata.git", buildData );
         }
-
-        File maven = new File( "apache-maven-3.2.3" );
-        if ( !maven.exists() )
-        {
-            System.out.println( "Maven does not exist, downloading. Please wait." );
-
-            File mvnTemp = new File( "mvn.zip" );
-            mvnTemp.deleteOnExit();
-
-            download( "http://static.spigotmc.org/maven/apache-maven-3.2.3-bin.zip", mvnTemp );
-            unzip( mvnTemp, new File( "." ) );
-        }
-
-        String mvn = maven.getAbsolutePath() + "/bin/mvn";
 
         Git bukkitGit = Git.open( bukkit );
         Git craftBukkitGit = Git.open( craftBukkit );
@@ -275,7 +249,7 @@ public class Builder
                     "-m", "BuildData/mappings/" + versionInfo.getPackageMappings(), "-o", finalMappedJar.getPath() );
         }
 
-        runProcess( CWD, "sh", mvn, "install:install-file", "-Dfile=" + finalMappedJar, "-Dpackaging=jar", "-DgroupId=org.spigotmc",
+        maven( CWD, "install:install-file", "-Dfile=" + finalMappedJar, "-Dpackaging=jar", "-DgroupId=org.spigotmc",
                 "-DartifactId=minecraft-server", "-Dversion=" + versionInfo.getMinecraftVersion() + "-SNAPSHOT" );
 
         File decompileDir = new File( workDir, "decompile-" + mappingsVersion );
@@ -294,7 +268,7 @@ public class Builder
                 }
             } );
 
-            runProcess( CWD, "java", "-jar", "BuildData/bin/fernflower.jar", "-dgs=1", "-hdc=0", "-rbr=0", "-asc=1", "-udv=0", clazzDir.getPath(), decompileDir.getPath() );
+            runProcess( CWD, "java", "-jar", "BuildData/bin/fernflower.jar", "-dgs=1", "-hdc=0", "-rbr=0", "-asc=1", "-udv=0", "-nls=1", clazzDir.getPath(), decompileDir.getPath() );
         }
 
         System.out.println( "Applying CraftBukkit Patches" );
@@ -304,6 +278,7 @@ public class Builder
             System.out.println( "Backing up NMS dir" );
             FileUtils.moveDirectory( nmsDir, new File( workDir, "nms.old." + System.currentTimeMillis() ) );
         }
+        System.setProperty( "line.separator", "\n" );
         File patchDir = new File( craftBukkit, "nms-patches" );
         for ( File file : patchDir.listFiles() )
         {
@@ -370,29 +345,48 @@ public class Builder
         if ( !skipCompile )
         {
             System.out.println( "Compiling Bukkit" );
-            runProcess( bukkit, "sh", mvn, "clean", "install" );
+            maven( bukkit, "clean", "install" );
             if ( generateDocs )
             {
-                runProcess( bukkit, "sh", mvn, "javadoc:jar" );
+                maven( bukkit, "javadoc:jar" );
             }
             if ( generateSource )
             {
-                runProcess( bukkit, "sh", mvn, "source:jar" );
+                maven( bukkit, "source:jar" );
             }
 
             System.out.println( "Compiling CraftBukkit" );
-            runProcess( craftBukkit, "sh", mvn, "clean", "install" );
+            maven( craftBukkit, "clean", "install" );
         }
 
         try
         {
-            runProcess( spigot, "bash", "applyPatches.sh" );
+            if (!bash)
+            {
+                applyPatches(
+                        bukkit,
+                        spigotApi,
+                        new File( spigot, "Spigot-API" ),
+                        new File( spigot, "Bukkit-Patches" ),
+                        "master"
+                );
+                applyPatches(
+                        craftBukkit,
+                        spigotServer,
+                        new File( spigot, "Spigot-Server" ),
+                        new File( spigot, "CraftBukkit-Patches" ),
+                        "patched"
+                );
+            } else
+            {
+                runProcess( spigot, "bash", "applyPatches.sh" );
+            }
             System.out.println( "*** Spigot patches applied!" );
             System.out.println( "Compiling Spigot & Spigot-API" );
 
             if ( !skipCompile )
             {
-                runProcess( spigot, "sh", mvn, "clean", "install" );
+                maven( spigot, "clean", "install" );
             }
         } catch ( Exception ex )
         {
@@ -408,6 +402,75 @@ public class Builder
         System.out.println( "Success! Everything compiled successfully. Copying final .jar files now." );
         copyJar( "CraftBukkit/target", "craftbukkit", "craftbukkit-" + versionInfo.getMinecraftVersion() + ".jar" );
         copyJar( "Spigot/Spigot-Server/target", "spigot", "spigot-" + versionInfo.getMinecraftVersion() + ".jar" );
+    }
+
+    public static void applyPatches(File base, File orig, File target, File patches, String branch) throws Exception
+    {
+        System.out.println( "Applying patches to " + target );
+        Git gitOrig = Git.open( orig );
+
+        gitOrig.fetch()
+                .setRemote( "file://" + base.getAbsolutePath() )
+                .setRefSpecs( new RefSpec( "refs/heads/*:refs/remotes/origin/*" ) )
+                .call();
+        gitOrig.reset()
+                .setRef( "origin/" + branch )
+                .setMode( ResetCommand.ResetType.HARD )
+                .call();
+        gitOrig.branchCreate()
+                .setName( "upstream" )
+                .setForce( true )
+                .call();
+
+        clone( orig.toURI().toString(), target );
+        Git git = Git.open( target );
+
+        StoredConfig config = git.getRepository().getConfig();
+        config.setString( "remote", "upstream", "url", "file://" + orig.getAbsolutePath() );
+        config.save();
+
+        git.branchCreate()
+                .setName( "master" )
+                .setForce( true )
+                .call();
+        git.checkout()
+                .setName( "master" )
+                .call();
+        git.fetch()
+                .setRemote( "upstream" )
+                .setRefSpecs( new RefSpec( "refs/heads/*:refs/remotes/upstream/*" ) )
+                .call();
+        git.reset()
+                .setRef( "refs/remotes/upstream/upstream" )
+                .setMode( ResetCommand.ResetType.HARD )
+                .call();
+        git.clean().setCleanDirectories( true ).call();
+
+        File[] ps = patches.listFiles();
+        Arrays.sort( ps );
+        for ( File patch : ps )
+        {
+            if ( !patch.getName().endsWith( ".patch" ) ) continue;
+            System.out.println( "Applying " + patch.getName() );
+
+            String patchTxt = Files.toString( patch, Charsets.UTF_8 );
+            patchTxt = patchTxt.replaceAll( "\r", "" );
+            byte[] bytes = patchTxt.getBytes( Charsets.UTF_8 );
+            List<File> files = git.apply()
+                    .setPatch( new ByteArrayInputStream( bytes ) )
+                    .call().getUpdatedFiles();
+            AddCommand add = git.add();
+            for (File file : files)
+            {
+                add.addFilepattern( target.toURI().relativize( file.toURI() ).getPath() );
+            }
+            add.call();
+            SpigotPatch spigotPatch = new SpigotPatch( patch );
+            git.commit()
+                    .setAuthor( spigotPatch.getAuthor() )
+                    .setMessage( spigotPatch.getMessage() )
+                    .call();
+        }
     }
 
     public static final String get(String url) throws IOException
@@ -464,6 +527,41 @@ public class Builder
             repo.reset().setRef( "origin/master" ).setMode( ResetCommand.ResetType.HARD ).call();
         }
         System.out.println( "Checked out: " + ref );
+    }
+
+    public static int maven(File workDir, String... command) throws Exception
+    {
+        File maven = new File( "apache-maven-3.2.3" );
+        if ( !maven.exists() )
+        {
+            System.out.println( "Maven does not exist, downloading. Please wait." );
+
+            File mvnTemp = new File( "mvn.zip" );
+            mvnTemp.deleteOnExit();
+
+            download( "http://static.spigotmc.org/maven/apache-maven-3.2.3-bin.zip", mvnTemp );
+            unzip( mvnTemp, new File( "." ) );
+        }
+
+        String mvn = maven.getAbsolutePath() + "/bin/mvn";
+
+        int extra = 2;
+        if ( IS_WINDOWS )
+        {
+            extra = 1;
+        }
+
+        String[] args = new String[ extra + command.length ];
+
+        if ( IS_WINDOWS ) {
+            args[ 0 ] = mvn + ".bat";
+        } else
+        {
+            args[ 0 ] = "sh";
+            args[ 1 ] = mvn;
+        }
+        System.arraycopy( command, 0, args, extra, command.length );
+        return runProcess( workDir, args );
     }
 
     public static int runProcess(File workDir, String... command) throws Exception
@@ -565,11 +663,51 @@ public class Builder
         }
     }
 
-    public static void clone(String url, File target) throws GitAPIException
+    public static void clone(String url, File target) throws Exception
     {
         System.out.println( "Starting clone of " + url + " to " + target );
 
-        Git result = Git.cloneRepository().setURI( url ).setDirectory( target ).call();
+        // Git result = Git.cloneRepository().setURI( url ).setDirectory( target ).call();
+        Repository repo = Git.init().setDirectory( target ).call().getRepository();
+        StoredConfig c = repo.getConfig();
+        if (c.getString( "user", null, "name" ) == null)
+        {
+            c.setString( "user", null, "name", "BuildTools" );
+        }
+        if (c.getString( "user", null, "email" ) == null)
+        {
+            c.setString( "user", null, "email", "unconfigured@null.spigotmc.org" );
+        }
+        c.setEnum( "core", null, "autocrlf", CoreConfig.AutoCRLF.FALSE );
+        URIish u = new URIish( url );
+        RemoteConfig config = new RemoteConfig( repo.getConfig(), "origin" );
+        config.addURI( u );
+        String dst = "refs/remotes/" + config.getName() + "/*";
+        RefSpec spec = new RefSpec();
+        spec = spec.setForceUpdate( true );
+        spec = spec.setSourceDestination( "refs/heads/*", dst );
+
+        config.addFetchRefSpec( spec );
+        config.update( c );
+        c.save();
+
+        Git result = new Git( repo );
+        result.fetch()
+                .setRemote( "origin" )
+                .setTagOpt( TagOpt.FETCH_TAGS )
+                .call();
+
+        result.branchCreate()
+                .setForce( true )
+                .setStartPoint( "origin/master" )
+                .setName( "master" )
+                .call();
+
+        result.checkout()
+                .setForce( true )
+                .setStartPoint( "origin/master" )
+                .setName( "master" )
+                .call();
 
         try
         {
