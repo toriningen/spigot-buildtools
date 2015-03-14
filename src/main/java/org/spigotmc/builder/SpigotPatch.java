@@ -9,12 +9,13 @@ import java.io.FileReader;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.Locale;
 
 @Getter
 public class SpigotPatch
 {
 
-    private static final DateFormat format = new SimpleDateFormat( "EEE, d MMM yyyy HH:mm:ss Z" );
+    private static final DateFormat format = new SimpleDateFormat( "EEE, d MMM yyyy HH:mm:ss Z", Locale.ENGLISH );
 
     private PersonIdent author;
     private String message;
