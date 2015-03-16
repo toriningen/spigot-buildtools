@@ -62,6 +62,7 @@ import org.eclipse.jgit.lib.CoreConfig;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.transport.FetchResult;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.TagOpt;
@@ -409,12 +410,12 @@ public class Builder
         System.out.println( "Applying patches to " + target );
         Git gitOrig = Git.open( orig );
 
-        gitOrig.fetch()
-                .setRemote( "file://" + base.getAbsolutePath() )
+        FetchResult fr = gitOrig.fetch()
+                .setRemote( base.toURI().toString() )
                 .setRefSpecs( new RefSpec( "refs/heads/*:refs/remotes/origin/*" ) )
                 .call();
         gitOrig.reset()
-                .setRef( "origin/" + branch )
+                .setRef( fr.getAdvertisedRef( "refs/heads/" + branch ).getObjectId().getName() )
                 .setMode( ResetCommand.ResetType.HARD )
                 .call();
         gitOrig.branchCreate()
@@ -436,12 +437,8 @@ public class Builder
         git.checkout()
                 .setName( "master" )
                 .call();
-        git.fetch()
-                .setRemote( "upstream" )
-                .setRefSpecs( new RefSpec( "refs/heads/*:refs/remotes/upstream/*" ) )
-                .call();
         git.reset()
-                .setRef( "refs/remotes/upstream/upstream" )
+                .setRef( "origin/upstream" )
                 .setMode( ResetCommand.ResetType.HARD )
                 .call();
         git.clean().setCleanDirectories( true ).call();
@@ -521,11 +518,20 @@ public class Builder
 
         System.out.println( "Successfully fetched updates!" );
 
-        repo.reset().setRef( ref ).setMode( ResetCommand.ResetType.HARD ).call();
-        if ( ref.equals( "master" ) )
-        {
-            repo.reset().setRef( "origin/master" ).setMode( ResetCommand.ResetType.HARD ).call();
-        }
+        if ( ref.equals( "master" ) ) ref = "origin/master";
+
+
+        repo.branchCreate()
+                .setForce( true )
+                .setStartPoint( ref )
+                .setName( "master" )
+                .call();
+
+        repo.checkout()
+                .setForce( true )
+                .setStartPoint( ref )
+                .setName( "master" )
+                .call();
         System.out.println( "Checked out: " + ref );
     }
 
